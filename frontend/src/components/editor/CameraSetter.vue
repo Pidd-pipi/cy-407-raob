@@ -6,6 +6,9 @@
     </header>
     <n-empty v-if="!node" description="选择时间轴节点后编辑相机位置" />
     <n-form v-else label-placement="top" :show-feedback="false" class="setter-form">
+      <n-alert v-if="nodeIssues.length" type="error" :show-icon="false" class="node-alert">
+        <div v-for="issue in nodeIssues" :key="issue.code + (issue.nodeId ?? '')">{{ issue.message }}</div>
+      </n-alert>
       <n-form-item label="展品">
         <n-select v-model:value="draft.artifactId" :options="artifactOptions" />
       </n-form-item>
@@ -44,11 +47,13 @@
 
 <script setup lang="ts">
 import { computed, reactive, watch } from 'vue';
-import type { Artifact, TourNode } from '@/types';
+import type { Artifact, TourIssue, TourNode } from '@/types';
 
 const props = defineProps<{
   node?: TourNode;
   artifacts: Artifact[];
+  inExhibitionArtifactIds?: string[];
+  issues?: TourIssue[];
 }>();
 
 const emit = defineEmits<{
@@ -63,9 +68,22 @@ const draft = reactive<Omit<TourNode, 'id'>>({
   narration: ''
 });
 
-const artifactOptions = computed(() =>
-  props.artifacts.map((artifact) => ({ label: artifact.name, value: artifact.id }))
+const nodeIssues = computed(() =>
+  (props.issues ?? []).filter((issue) => issue.nodeId && issue.nodeId === props.node?.id)
 );
+
+const artifactOptions = computed(() => {
+  const inExhibition = new Set(props.inExhibitionArtifactIds ?? props.artifacts.map((artifact) => artifact.id));
+  const options = props.artifacts
+    .filter((artifact) => inExhibition.has(artifact.id))
+    .map((artifact) => ({ label: artifact.name, value: artifact.id }));
+  // 草稿节点引用了已退出展览的展品：保留选项以便查看，但明确标注，发布仍会被拦截。
+  const selected = props.artifacts.find((artifact) => artifact.id === draft.artifactId);
+  if (selected && !inExhibition.has(selected.id)) {
+    options.unshift({ label: `${selected.name}（已退出展览）`, value: selected.id });
+  }
+  return options;
+});
 
 watch(
   () => props.node,
@@ -119,6 +137,10 @@ small {
 .setter-form {
   display: grid;
   gap: 10px;
+}
+
+.node-alert {
+  line-height: 1.5;
 }
 
 .vector-grid {

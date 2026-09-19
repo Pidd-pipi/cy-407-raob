@@ -7,7 +7,14 @@
       </div>
       <div class="gallery-actions">
         <n-tag :bordered="false">{{ exhibition.curator }}</n-tag>
-        <n-button secondary @click="toggleTour">{{ isTouring ? '暂停导览' : '自动导览' }}</n-button>
+        <n-tooltip :disabled="Boolean(publishedTour)" trigger="hover">
+          <template #trigger>
+        <n-button secondary :disabled="!publishedTour" @click="toggleTour">
+          {{ isTouring ? '暂停导览' : '自动导览' }}
+        </n-button>
+          </template>
+          该展览的导览尚未发布，暂不能自动导览
+        </n-tooltip>
       </div>
     </div>
 
@@ -48,8 +55,9 @@ import { useAnnotationStore } from '@/stores/annotation';
 import { useArtifactStore } from '@/stores/artifact';
 import { useExhibitionStore } from '@/stores/exhibition';
 import { useTourStore } from '@/stores/tour';
-import type { Artifact, Tour } from '@/types';
-import { createGalleryHall, loadArtifactObject } from '@/utils/model-loader';
+import type { Artifact, PublishedTourVersion } from '@/types';
+import { CraftCategory } from '@/types';
+import { createGalleryHall, createArtifactFallback, loadArtifactObject } from '@/utils/model-loader';
 import { disposeObject3D } from '@/utils/renderer';
 import { createTourPlayer, type TourPlayerControls } from '@/utils/tour-player';
 
@@ -75,18 +83,39 @@ const exhibition = computed(() => {
   return exhibitionStore.getById(id) ?? exhibitionStore.exhibitions[0];
 });
 
+const selectedArtifact = computed(() => artifactStore.getById(selectedArtifactId.value ?? ''));
+
+// 展线条展示当前展览内的展品。
 const artifacts = computed<Artifact[]>(() => {
   const ids = exhibition.value?.artifactIds ?? [];
   return ids.map((id) => artifactStore.getById(id)).filter((artifact): artifact is Artifact => Boolean(artifact));
 });
 
-const selectedArtifact = computed(() => artifactStore.getById(selectedArtifactId.value ?? ''));
-const activeTour = computed<Tour | undefined>(() => {
-  if (!exhibition.value) return undefined;
-  return tourStore.byExhibitionId(exhibition.value.id)[0];
+// 自动导览只读取已发布快照；草稿编辑与后续重新发布都不会改动它。
+const publishedTour = computed<PublishedTourVersion | undefined>(() =>
+  exhibition.value ? tourStore.publishedForExhibition(exhibition.value.id) : undefined
+);
+
+// 场景展品 = 展览当前展品 ∪ 已发布导览快照引用的展品，
+// 保证展品退出展览（甚至从展品库删除）后，已发布版本仍可离线回放。
+const sceneArtifacts = computed<Artifact[]>(() => {
+  const map = new Map<string, Artifact>();
+  for (const artifact of artifacts.value) {
+    map.set(artifact.id, artifact);
+  }
+  for (const node of publishedTour.value?.nodes ?? []) {
+    const artifact = artifactStore.getById(node.artifactId);
+    if (artifact && !map.has(node.artifactId)) map.set(node.artifactId, artifact);
+  }
+  return [...map.values()];
 });
 
-const sceneKey = computed(() => `${three.ready.value}-${exhibition.value?.id}-${artifacts.value.map((item) => item.id).join('|')}`);
+const sceneKey = computed(
+  () =>
+    `${three.ready.value}-${exhibition.value?.id}-${publishedTour.value?.version ?? 'none'}-${sceneArtifacts.value
+      .map((item) => item.id)
+      .join('|')}`
+);
 
 function onSceneReady(element: HTMLElement) {
   containerRef.value = element;
@@ -103,14 +132,39 @@ async function rebuildScene() {
   const root = createGalleryHall(exhibition.value.themeColor);
   const spacing = 4.1;
   await Promise.all(
-    artifacts.value.map(async (artifact, index) => {
+    sceneArtifacts.value.map(async (artifact, index) => {
       const object = await loadArtifactObject(artifact);
-      object.position.set((index - (artifacts.value.length - 1) / 2) * spacing, 0, index % 2 === 0 ? -1.35 : 1.2);
+      object.position.set((index - (sceneArtifacts.value.length - 1) / 2) * spacing, 0, index % 2 === 0 ? -1.35 : 1.2);
       object.rotation.y = index % 2 === 0 ? 0.16 : -0.24;
       object.userData.artifactId = artifact.id;
       root.add(object);
     })
   );
+
+  // 快照引用但已从展品库删除的展品：用占位展牌保证已发布版本回放画面完整。
+  const missingIds = [...new Set((publishedTour.value?.nodes ?? []).map((node) => node.artifactId))].filter(
+    (id) => !artifactStore.getById(id)
+  );
+  missingIds.forEach((artifactId, missingIndex) => {
+    const stub: Artifact = {
+      id: artifactId,
+      name: '已撤展展品',
+      description: '',
+      author: '',
+      category: CraftCategory.Pottery,
+      dimensions: '',
+      year: 0,
+      material: '',
+      images: [],
+      imageFileIds: [],
+      createdAt: '',
+      updatedAt: ''
+    };
+    const object = createArtifactFallback(stub);
+    object.position.set((missingIndex - (missingIds.length - 1) / 2) * spacing, 0, 3.6);
+    object.userData.artifactId = artifactId;
+    root.add(object);
+  });
 
   sceneRoot = root;
   three.scene.value.add(root);
@@ -148,9 +202,11 @@ function toggleTour() {
     isTouring.value = false;
     return;
   }
-  if (!three.camera.value || !three.controls.value || !activeTour.value) return;
+  if (!three.camera.value || !three.controls.value || !publishedTour.value) return;
+  // 取下当前快照：播放期间即使重新发布，本次播放仍沿用这一份节点数组。
+  const snapshot = publishedTour.value;
   player?.stop();
-  player = createTourPlayer(three.camera.value, three.controls.value, activeTour.value.nodes, (node) => {
+  player = createTourPlayer(three.camera.value, three.controls.value, snapshot.nodes, (node) => {
     selectedArtifactId.value = node.artifactId;
     activeNarration.value = node.narration;
   });

@@ -10,11 +10,14 @@
         :key="node.id"
         type="button"
         class="timeline-node"
-        :class="{ active: node.id === selectedNodeId }"
+        :class="{ active: node.id === selectedNodeId, invalid: issueMessages(node.id).length > 0 }"
         @click="$emit('select', node.id)"
       >
         <span>{{ index + 1 }}</span>
-        <strong>{{ artifactName(node.artifactId) }}</strong>
+        <div class="node-title">
+          <strong>{{ artifactName(node.artifactId) }}</strong>
+          <small v-for="message in issueMessages(node.id)" :key="message" class="node-issue">{{ message }}</small>
+        </div>
         <small>{{ Math.round(node.transitionMs / 100) / 10 }}s</small>
         <div class="node-actions" @click.stop>
           <n-button size="tiny" quaternary :disabled="index === 0" @click="move(index, -1)">前移</n-button>
@@ -27,12 +30,14 @@
 </template>
 
 <script setup lang="ts">
-import type { Artifact, TourNode } from '@/types';
+import { computed } from 'vue';
+import type { Artifact, TourIssue, TourNode } from '@/types';
 
 const props = defineProps<{
   nodes: TourNode[];
   artifacts: Artifact[];
   selectedNodeId?: string;
+  issues?: TourIssue[];
 }>();
 
 const emit = defineEmits<{
@@ -40,6 +45,21 @@ const emit = defineEmits<{
   reorder: [nodes: TourNode[]];
   remove: [nodeId: string];
 }>();
+
+const issuesByNode = computed(() => {
+  const map = new Map<string, string[]>();
+  for (const issue of props.issues ?? []) {
+    if (!issue.nodeId) continue;
+    const list = map.get(issue.nodeId) ?? [];
+    list.push(issue.message.replace(/^第 \d+ 个节点：?/, ''));
+    map.set(issue.nodeId, list);
+  }
+  return map;
+});
+
+function issueMessages(nodeId: string): string[] {
+  return issuesByNode.value.get(nodeId) ?? [];
+}
 
 function artifactName(id: string) {
   return props.artifacts.find((artifact) => artifact.id === id)?.name ?? '未选择展品';
@@ -116,6 +136,23 @@ header small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.node-title {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.node-issue {
+  color: #bb4d3e;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.timeline-node.invalid {
+  border-color: rgba(187, 77, 62, 0.55);
+  background: rgba(187, 77, 62, 0.06);
 }
 
 .node-actions {
