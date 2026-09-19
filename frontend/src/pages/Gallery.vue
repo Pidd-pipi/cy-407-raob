@@ -7,7 +7,14 @@
       </div>
       <div class="gallery-actions">
         <n-tag :bordered="false">{{ exhibition.curator }}</n-tag>
-        <n-button secondary @click="toggleTour">{{ isTouring ? '暂停导览' : '自动导览' }}</n-button>
+        <n-tooltip trigger="hover" :disabled="onlineNodes.length > 0">
+          <template #trigger>
+            <n-button secondary :disabled="onlineNodes.length === 0" @click="toggleTour">
+              {{ isTouring ? '暂停导览' : '自动导览' }}
+            </n-button>
+          </template>
+          导览尚未发布：请在导览编辑中校验并发布后再播放。
+        </n-tooltip>
       </div>
     </div>
 
@@ -48,7 +55,7 @@ import { useAnnotationStore } from '@/stores/annotation';
 import { useArtifactStore } from '@/stores/artifact';
 import { useExhibitionStore } from '@/stores/exhibition';
 import { useTourStore } from '@/stores/tour';
-import type { Artifact, Tour } from '@/types';
+import type { Artifact, PublishedTourNode, Tour } from '@/types';
 import { createGalleryHall, loadArtifactObject } from '@/utils/model-loader';
 import { disposeObject3D } from '@/utils/renderer';
 import { createTourPlayer, type TourPlayerControls } from '@/utils/tour-player';
@@ -85,6 +92,12 @@ const activeTour = computed<Tour | undefined>(() => {
   if (!exhibition.value) return undefined;
   return tourStore.byExhibitionId(exhibition.value.id)[0];
 });
+
+/**
+ * 自动导览只认线上快照：发布成功后改用新版本，
+ * 草稿编辑与撤展都不影响线上播放。
+ */
+const onlineNodes = computed<PublishedTourNode[]>(() => activeTour.value?.published?.nodes ?? []);
 
 const sceneKey = computed(() => `${three.ready.value}-${exhibition.value?.id}-${artifacts.value.map((item) => item.id).join('|')}`);
 
@@ -148,9 +161,11 @@ function toggleTour() {
     isTouring.value = false;
     return;
   }
-  if (!three.camera.value || !three.controls.value || !activeTour.value) return;
+  if (!three.camera.value || !three.controls.value || onlineNodes.value.length === 0) return;
+  // 播放开始时固定快照数组，播放期间发布新版本或继续编辑都不会打断当前回放。
+  const snapshotNodes = onlineNodes.value.map((node) => ({ ...node }));
   player?.stop();
-  player = createTourPlayer(three.camera.value, three.controls.value, activeTour.value.nodes, (node) => {
+  player = createTourPlayer(three.camera.value, three.controls.value, snapshotNodes, (node) => {
     selectedArtifactId.value = node.artifactId;
     activeNarration.value = node.narration;
   });
